@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Simple Flying Game</title>
+<style>
+  body { margin:0; font-family: Arial, Helvetica, sans-serif; background:#87CEEB; display:flex; align-items:center; justify-content:center; height:100vh; }
+  #gameContainer { position:relative; width:820px; max-width:95vw; background:linear-gradient(#87CEEB,#b3e5ff); box-shadow:0 6px 20px rgba(0,0,0,0.2); border-radius:8px; overflow:hidden; }
+  canvas { display:block; background: linear-gradient(#87CEEB 0%, #dff6ff 100%); width:100%; height:480px; }
+  .overlay { position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+  .panel { background: rgba(0,0,0,0.6); color:#fff; padding:20px; border-radius:8px; text-align:center; pointer-events:auto; }
+  button { background:#ffcc00; border:0; padding:10px 18px; border-radius:6px; font-weight:bold; cursor:pointer; }
+  .score { position:absolute; top:10px; left:10px; color:#003; background:rgba(255,255,255,0.8); padding:6px 10px; border-radius:6px; font-weight:bold; }
+  .hint { position:absolute; top:10px; right:10px; color:#003; background:rgba(255,255,255,0.8); padding:6px 10px; border-radius:6px; font-size:13px; }
+  @media (max-width:600px){ canvas{height:360px;} }
+</style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="gameCanvas" width="820" height="480"></canvas>
+
+    <div class="score" id="scoreUI">Score: 0</div>
+    <div class="hint">↑/↓ या स्क्रीन टच करके चलाओ</div>
+
+    <div class="overlay" id="startScreen" style="background:linear-gradient(rgba(0,0,0,0.25), rgba(0,0,0,0.25)); pointer-events:auto;">
+      <div class="panel">
+        <h2 style="margin:0 0 10px 0">Flying Game</h2>
+        <p style="margin:0 0 14px 0">अपना प्लेन उड़ाओ, coins ले जाओ और obstacles से बचो!</p>
+        <div style="display:flex; gap:10px; justify-content:center;">
+          <button id="startBtn">Start</button>
+          <button id="howBtn">How to Play</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="gameOverScreen" style="display:none; pointer-events:auto;">
+      <div class="panel" id="gameOverPanel">
+        <h2 id="goTitle">Game Over</h2>
+        <p id="goText">Score: 0</p>
+        <div style="display:flex; gap:10px; justify-content:center;">
+          <button id="restartBtn">Restart</button>
+          <button id="backBtn">Main Menu</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ====== Simple Flying Game (Canvas) ======
+// Controls: Up/Down arrow or touch (tap upper/lower half)
+// Single file, no images required (all drawn by canvas)
+
+// --- Game vars ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let W = canvas.width, H = canvas.height;
+
+const startScreen = document.getElementById('startScreen');
+const startBtn = document.getElementById('startBtn');
+const howBtn = document.getElementById('howBtn');
+const gameOverScreen = document.getElementById('gameOverScreen');
+const restartBtn = document.getElementById('restartBtn');
+const backBtn = document.getElementById('backBtn');
+const scoreUI = document.getElementById('scoreUI');
+const goText = document.getElementById('goText');
+
+let running = false;
+let lastTime = 0;
+let dt = 0;
+
+// --- Player (plane) ---
+const player = {
+  x: 120,
+  y: H/2,
+  w: 50,
+  h: 30,
+  vy: 0,
+  speed: 0.35, // acceleration when pressing
+  maxSpeed: 4,
+  gravity: 0.12,
+  color: '#ff5050'
+};
+
+// Obstacles and coins
+let obstacles = [];
+let coins = [];
+let spawnTimer = 0;
+let coinTimer = 0;
+let score = 0;
+
+// Difficulty
+let obstacleInterval = 1500; // ms
+let obstacleSpeed = 2.5;
+
+// Resize handler (optional)
+function resizeCanvas(){
+  // keep internal size fixed for simplicity
+}
+window.addEventListener('resize', resizeCanvas);
+
+// --- Input ---
+let pressingUp = false;
+let pressingDown = false;
+
+window.addEventListener('keydown', (e)=>{
+  if(e.key === 'ArrowUp' || e.key === 'w') pressingUp = true;
+  if(e.key === 'ArrowDown' || e.key === 's') pressingDown = true;
+});
+window.addEventListener('keyup', (e)=>{
+  if(e.key === 'ArrowUp' || e.key === 'w') pressingUp = false;
+  if(e.key === 'ArrowDown' || e.key === 's') pressingDown = false;
+});
+
+// Touch: tap top half = up, bottom half = down
+canvas.addEventListener('touchstart', (ev)=>{
+  ev.preventDefault();
+  const t = ev.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  const y = (t.clientY - rect.top) * (canvas.height / rect.height);
+  if(y < canvas.height/2) pressingUp = true;
+  else pressingDown = true;
+});
+canvas.addEventListener('touchend', (ev)=>{
+  ev.preventDefault();
+  pressingUp = pressingDown = false;
+});
+
+// Mouse click as tap
+canvas.addEventListener('mousedown', (ev)=>{
+  const rect = canvas.getBoundingClientRect();
+  const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  if(y < canvas.height/2) pressingUp = true;
+  else pressingDown = true;
+});
+window.addEventListener('mouseup', ()=>{ pressingUp = pressingDown = false; });
+
+// --- Utility ---
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+// Reset game
+function resetGame(){
+  player.y = H/2;
+  player.vy = 0;
+  obstacles = [];
+  coins = [];
+  spawnTimer = 0;
+  coinTimer = 0;
+  score = 0;
+  obstacleInterval = 1500;
+  obstacleSpeed = 2.5;
+  scoreUI.textContent = 'Score: 0';
+}
+
+// Start / Stop
+startBtn.onclick = ()=>{
+  startScreen.style.display = 'none';
+  gameOverScreen.style.display = 'none';
+  resetGame();
+  running = true;
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+};
+howBtn.onclick = ()=>{
+  alert('Controls:\\n- Keyboard: Arrow Up / Arrow Down\\n- Touch: Tap top half to go up, bottom half to go down\\nGoal: Collect coins and avoid obstacles. On crash, use Restart.');
+};
+
+restartBtn.onclick = ()=>{
+  startScreen.style.display = 'none';
+  gameOverScreen.style.display = 'none';
+  resetGame();
+  running = true;
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+};
+
+backBtn.onclick = ()=>{
+  gameOverScreen.style.display = 'none';
+  startScreen.style.display = 'flex';
+};
+
+// --- Game Loop ---
+function loop(ts){
+  if(!running) return;
+  dt = ts - lastTime;
+  lastTime = ts;
+
+  update(dt);
+  render();
+
+  requestAnimationFrame(loop);
+}
+
+// Update
+function update(delta){
+  // Player physics
+  if(pressingUp) { player.vy -= player.speed * (delta/16); }
+  if(pressingDown) { player.vy += player.speed * (delta/16); }
+  // natural gravity / drag to center
+  player.vy += (player.gravity * (delta/16));
+  // clamp velocity
+  if(player.vy > player.maxSpeed) player.vy = player.maxSpeed;
+  if(player.vy < -player.maxSpeed) player.vy = -player.maxSpeed;
+  player.y += player.vy;
+
+  // keep inside screen
+  if(player.y < player.h/2) { player.y = player.h/2; player.vy = 0; }
+  if(player.y > H - player.h/2) { player.y = H - player.h/2; player.vy = 0; }
+
+  // spawn obstacles
+  spawnTimer += delta;
+  if(spawnTimer > obstacleInterval){
+    spawnTimer = 0;
+    // create gap (space) with top obstacle and bottom obstacle leaving a gap
+    const gap = rand(100, 160);
+    const centerY = rand(80, H-80);
+    // top obstacle
+    obstacles.push({
+      x: W + 40,
+      y: 0,
+      w: 40,
+      h: Math.max(20, centerY - gap/2 - 10),
+      speed: obstacleSpeed
+    });
+    // bottom obstacle
+    const bottomTop = centerY + gap/2 + 10;
+    obstacles.push({
+      x: W + 40,
+      y: bottomTop,
+      w: 40,
+      h: H - bottomTop,
+      speed: obstacleSpeed
+    });
+    // increase difficulty slowly
+    if(obstacleInterval > 800) obstacleInterval *= 0.995;
+    obstacleSpeed += 0.01;
+  }
+
+  // spawn coins occasionally
+  coinTimer += delta;
+  if(coinTimer > 1000){
+    coinTimer = 0;
+    if(Math.random() < 0.7){
+      coins.push({
+        x: W + 50,
+        y: rand(40, H-40),
+        r: 10,
+        speed: obstacleSpeed + 0.5,
+        collected: false
+      });
+    }
+  }
+
+  // move obstacles and coins, check collisions
+  for(let i = obstacles.length-1; i>=0; i--){
+    const o = obstacles[i];
+    o.x -= o.speed * (delta/16);
+    if(o.x + o.w < -50) obstacles.splice(i,1);
+    // collision with player (rectangle vs rectangle)
+    if(rectCircleColliding(player.x - player.w/2, player.y - player.h/2, player.w, player.h, o.x, o.y + o.h/2, Math.max(o.w,o.h)/2)){
+      // collision -> game over
+      endGame();
+      return;
+    }
+  }
+
+  for(let i = coins.length-1; i>=0; i--){
+    const c = coins[i];
+    c.x -= c.speed * (delta/16);
+    if(c.x + c.r < -50) coins.splice(i,1);
+    // collision: circle vs rect(player)
+    if(circleRectCollide(c.x, c.y, c.r, player.x - player.w/2, player.y - player.h/2, player.w, player.h) && !c.collected){
+      c.collected = true;
+      score += 10;
+      scoreUI.textContent = 'Score: ' + score;
+      coins.splice(i,1);
+      // small speed boost on coin
+      player.vy *= 0.8;
+    }
+  }
+
+  // pass-through scoring: reward for surviving or passing obstacles
+  // We'll increment small score over time
+  score += Math.floor(delta * 0.005);
+  scoreUI.textContent = 'Score: ' + score;
+}
+
+// Draw
+function render(){
+  // clear
+  ctx.clearRect(0,0,W,H);
+
+  // background (sky gradient already via CSS, draw clouds)
+  drawClouds();
+
+  // draw coins
+  for(const c of coins){
+    ctx.beginPath();
+    ctx.fillStyle = '#ffdb4d';
+    ctx.arc(c.x, c.y, c.r, 0, Math.PI*2);
+    ctx.fill();
+    // inner shine
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.arc(c.x - c.r*0.3, c.y - c.r*0.3, c.r*0.35, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // draw obstacles (simple pillars)
+  for(const o of obstacles){
+    ctx.fillStyle = '#2b6b8f';
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    // border
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.strokeRect(o.x, o.y, o.w, o.h);
+  }
+
+  // draw player (simple plane shape)
+  drawPlane(player.x, player.y, player.w, player.h);
+
+  // HUD is outside canvas (score div), no need to draw here
+}
+
+// small clouds for background
+function drawClouds(){
+  // draw some simple moving clouds based on time
+  const t = performance.now() * 0.0002;
+  for(let i=0;i<5;i++){
+    const x = (i*200 + (t*60*(i%2?1:-1))) % (W+200) - 100;
+    const y = 40 + (i*30);
+    drawCloud(x, y, 60 + (i*6));
+  }
+}
+function drawCloud(x,y,size){
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.ellipse(x, y, size*0.6, size*0.45, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + size*0.35, y+6, size*0.5, size*0.36, 0, 0, Math.PI*2);
+  ctx.fill();
+}
+
+// plane drawing: simple triangle + body
+function drawPlane(cx, cy, w, h){
+  ctx.save();
+  ctx.translate(cx, cy);
+  // rotation based on velocity
+  const ang = Math.max(-0.5, Math.min(0.5, player.vy * 0.15));
+  ctx.rotate(ang);
+  // body
+  ctx.fillStyle = player.color;
+  ctx.beginPath();
+  ctx.moveTo(-w/2, -h/3);
+  ctx.lineTo(w/4, 0);
+  ctx.lineTo(-w/2, h/3);
+  ctx.closePath();
+  ctx.fill();
+  // cockpit
+  ctx.beginPath();
+  ctx.fillStyle = '#222';
+  ctx.ellipse(w/8, 0, w/8, h/5, 0, 0, Math.PI*2);
+  ctx.fill();
+  // tail
+  ctx.beginPath();
+  ctx.moveTo(-w/4, -h/3);
+  ctx.lineTo(-w/2 - 6, -h/2);
+  ctx.lineTo(-w/4 + 2, -h/6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// --- Collision helpers ---
+function circleRectCollide(cx, cy, r, rx, ry, rw, rh){
+  // check circle center vs rect
+  const distX = Math.abs(cx - (rx + rw/2));
+  const distY = Math.abs(cy - (ry + rh/2));
+  if (distX > (rw/2 + r)) return false;
+  if (distY > (rh/2 + r)) return false;
+  if (distX <= (rw/2)) return true;
+  if (distY <= (rh/2)) return true;
+  const dx = distX - rw/2;
+  const dy = distY - rh/2;
+  return (dx*dx + dy*dy <= r*r);
+}
+function rectCircleColliding(rx, ry, rw, rh, cx, cy, cr){
+  // rx,ry is rect top-left, cx,cy is circle center; we use same function
+  return circleRectCollide(cx, cy, cr, rx, ry, rw, rh);
+}
+function circleRectCollide(circleX, circleY, r, rectX, rectY, rectW, rectH){
+  // alternative name
+  // compute nearest point
+  const nx = Math.max(rectX, Math.min(circleX, rectX + rectW));
+  const ny = Math.max(rectY, Math.min(circleY, rectY + rectH));
+  const dx = circleX - nx;
+  const dy = circleY - ny;
+  return (dx*dx + dy*dy) < (r*r);
+}
+
+// End game
+function endGame(){
+  running = false;
+  gameOverScreen.style.display = 'flex';
+  goText.textContent = 'Score: ' + score;
+}
+
+// Initialize: show start screen
+startScreen.style.display = 'flex';
+gameOverScreen.style.display = 'none';
+
+// Make canvas high DPI friendly
+function fixHiDPI(){
+  const ratio = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth;
+  const cssH = canvas.clientHeight;
+  canvas.width = Math.floor(cssW * ratio);
+  canvas.height = Math.floor(cssH * ratio);
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+  W = canvas.width / ratio;
+  H = canvas.height / ratio;
+}
+function init(){
+  // set canvas size based on attributes (we used width/height), but scale for DPR
+  const ratio = window.devicePixelRatio || 1;
+  ctx.setTransform(1,0,0,1,0,0);
+  // preserve internal size (we used width/height attributes)
+  // but set CSS size to match attributes
+  canvas.style.width = canvas.getAttribute('width') + 'px';
+  canvas.style.height = canvas.getAttribute('height') + 'px';
+  fixHiDPI();
+}
+init();
+
+</script>
+</body>
+</html>
